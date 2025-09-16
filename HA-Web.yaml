@@ -341,9 +341,20 @@ Outputs:
   LoadBalancerDNS:
     Description: Public URL of the Application Load Balancer
     Value: !GetAtt ApplicationLoadBalancer.DNSName
+
   VpcId:
     Description: ID of the created VPC
     Value: !Ref VPC
+
+  PublicSubnet1Id:
+    Description: ID of the first public subnet
+    Value: !Ref PublicSubnet1
+
+  PublicSubnet2Id:
+    Description: ID of the second public subnet
+    Value: !Ref PublicSubnet2
+
   AsgName:
     Description: Auto Scaling Group Name
     Value: !Ref AutoScalingGroup
+
