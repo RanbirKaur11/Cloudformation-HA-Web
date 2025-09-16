@@ -1,0 +1,349 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Highly Available Web Tier on AWS (VPC + ALB + ASG in 2 AZs)
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR for the VPC
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 10.0.1.0/24
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 10.0.2.0/24
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.0.11.0/24
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.0.12.0/24
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 KeyPair name for SSH
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t2.micro
+      - t2.small
+      - t2.medium
+    Description: EC2 instance type for app servers
+  DesiredCapacity:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 6
+  MinSize:
+    Type: Number
+    Default: 2
+  MaxSize:
+    Type: Number
+    Default: 4
+
+  # Latest Amazon Linux 2023 AMI via SSM Parameter
+  AmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Mappings: {}
+
+Conditions: {}
+
+Resources:
+
+  # -------------------------
+  # Networking (VPC & Subnets)
+  # -------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: HA-Web-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: HA-Web-IGW }]
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet1Cidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: PublicSubnet1 }]
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: PublicSubnet2 }]
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: PrivateSubnet1 }]
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: PrivateSubnet2 }]
+
+  # -------------------------
+  # Routing
+  # -------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{ Key: Name, Value: Public-RT }]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags: [{ Key: Name, Value: HA-Web-NATGW }]
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{ Key: Name, Value: Private-RT-1 }]
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags: [{ Key: Name, Value: Private-RT-2 }]
+
+  PrivateDefaultRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateDefaultRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet2RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  # -------------------------
+  # Security Groups
+  # -------------------------
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP from internet to ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags: [{ Key: Name, Value: ALB-SG }]
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP from ALB to instances; allow SSH from your IP (optional)
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags: [{ Key: Name, Value: App-Instance-SG }]
+
+  # -------------------------
+  # Load Balancer
+  # -------------------------
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: HA-Web-ALB
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Type: application
+      IpAddressType: ipv4
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: HA-Web-TG
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: '200-399'
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # -------------------------
+  # Launch Template & Auto Scaling
+  # -------------------------
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: HA-Web-LT
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        SecurityGroupIds: [!Ref InstanceSecurityGroup]
+        MetadataOptions:
+          HttpTokens: required
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -xe
+            dnf update -y
+            dnf install -y nginx
+            systemctl enable nginx
+            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            HOSTNAME_FQDN=$(hostname -f || hostname)
+            cat >/usr/share/nginx/html/index.html <<'HTML'
+            <!doctype html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <title>HA Web App</title>
+              <style>
+                body { font-family: system-ui, Arial; margin: 4rem; }
+                .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px; }
+                h1 { margin: 0 0 8px; }
+                code { background: #f3f4f6; padding: 3px 6px; border-radius: 6px; }
+              </style>
+            </head>
+            <body>
+              <div class="card">
+                <h1>🚀 Highly Available App (ALB + ASG)</h1>
+                <p>This page is served by an EC2 instance in a private subnet behind an Application Load Balancer.</p>
+                <ul>
+                  <li>Instance ID: <code>__INSTANCE_ID__</code></li>
+                  <li>Availability Zone: <code>__AZ__</code></li>
+                  <li>Hostname: <code>__HOSTNAME__</code></li>
+                </ul>
+              </div>
+            </body>
+            </html>
+            HTML
+            sed -i "s/__INSTANCE_ID__/${INSTANCE_ID}/" /usr/share/nginx/html/index.html
+            sed -i "s/__AZ__/${AZ}/" /usr/share/nginx/html/index.html
+            sed -i "s/__HOSTNAME__/${HOSTNAME_FQDN}/" /usr/share/nginx/html/index.html
+            systemctl restart nginx
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      MinSize: !Ref MinSize
+      MaxSize: !Ref MaxSize
+      DesiredCapacity: !Ref DesiredCapacity
+      TargetGroupARNs: [!Ref TargetGroup]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 60
+      MetricsCollection:
+        - Granularity: '1Minute'
+      Tags:
+        - Key: Name
+          Value: HA-Web-Instance
+          PropagateAtLaunch: true
+
+Outputs:
+  LoadBalancerDNS:
+    Description: Public URL of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+  VpcId:
+    Description: ID of the created VPC
+    Value: !Ref VPC
+  AsgName:
+    Description: Auto Scaling Group Name
+    Value: !Ref AutoScalingGroup
