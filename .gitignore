@@ -1,0 +1,46 @@
+🛠 How to Do It (Your Steps Are Correct)
+
+In Git Bash:
+
+cd "/d/So what lets practice DevOps/Week5"
+
+# Create the .gitignore file
+cat > .gitignore << 'EOF'
+# Ignore VS Code settings
+.vscode/
+
+# Ignore logs and temp files
+*.log
+*.tmp
+~*
+
+# Ignore MS Office temporary and backup files
+*.docx
+*.doc
+*.xlsx
+*.xls
+~$*
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+EOF
+
+
+This will create the file.
+
+Then commit and push:
+
+git add .gitignore
+git commit -m "Add .gitignore to keep repo clean"
+git push
+
+🔎 Verify
+
+After pushing, refresh your GitHub repo — you should see .gitignore listed.
+Next time you run:
+
+git add .
+
+
+it will automatically skip .docx, .tmp, .vscode/, etc.
